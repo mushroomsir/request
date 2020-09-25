@@ -2,6 +2,9 @@ package request
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -96,6 +99,12 @@ func (a *Request) Header(h http.Header) *Request {
 	return a
 }
 
+// SetHeader ...
+func (a *Request) SetHeader(key, val string) *Request {
+	a.header.Set(key, val)
+	return a
+}
+
 // Result ...
 func (a *Request) Result(result interface{}) *Request {
 	a.result = result
@@ -119,10 +128,11 @@ func (a *Request) Do() (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	respBody, err := bodyHandler(resp)
 	if err != nil {
 		return nil, err
 	}
+
 	if a.result != nil {
 		err = json.Unmarshal(respBody, a.result)
 		if err != nil {
@@ -138,6 +148,39 @@ func (a *Request) Do() (*Response, error) {
 	return response, nil
 }
 
+func bodyHandler(resp *http.Response) ([]byte, error) {
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var reader io.ReadCloser
+	switch resp.Header.Get("Content-Encoding") {
+	case "gzip":
+		if reader, err = gzip.NewReader(bytes.NewBuffer(respBody)); err != nil {
+			return nil, err
+		}
+	case "deflate":
+		// deflate should be zlib
+		// http://www.gzip.org/zlib/zlib_faq.html#faq38
+		if reader, err = zlib.NewReader(bytes.NewBuffer(respBody)); err != nil {
+			// try RFC 1951 deflate
+			// http: //www.open-open.com/lib/view/open1460866410410.html
+			reader = flate.NewReader(bytes.NewBuffer(respBody))
+		}
+	}
+	if reader == nil {
+		return respBody, nil
+	}
+
+	defer reader.Close()
+	respBody, err = ioutil.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	return respBody, nil
+}
+
 // Response ...
 type Response struct {
 	Request    *http.Request
@@ -151,7 +194,12 @@ func (a *Response) OK() bool {
 	return a.StatusCode < 300
 }
 
-// Content ...
+// String deprecated
 func (a *Response) String() string {
+	return string(a.Content)
+}
+
+// Text ...
+func (a *Response) Text() string {
 	return string(a.Content)
 }
